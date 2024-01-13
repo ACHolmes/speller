@@ -1,0 +1,4 @@
+*.o
+.vscode
+speller
+speller50
