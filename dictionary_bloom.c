@@ -7,54 +7,67 @@
 #include "strings.h"
 #include "stdio.h"
 #include "string.h"
-#include "ctype.h"
- #include <time.h>
 
 #define NODE_CAPACITY 5
+#define base1 300043
+#define base2 2 * base1 
+// #define N 1200000
 
-// Represents a node in a hash table
-typedef struct node
-{
-    __uint8_t stored;
-    char words[NODE_CAPACITY][LENGTH + 1];
-} node;
 
 // TODO: Choose number of buckets in hash table
-const unsigned int N = 400000;
 
 __uint32_t dictsize = 0;
 
-// Hash table
-int table[N];
 
-// My hash using djb2
-inline static __uint32_t my_hash (const char* word) {
-    unsigned long hash = 5381;
+const unsigned int N = 3 * base1;
+
+// Hash table
+__uint8_t table[N];
+
+inline static void hash_set_all (const char* word) {
+    unsigned long hash3 = 0x12345678;
+
+    // See: https://github.com/aappleby/smhasher/blob/master/src/Hashes.cpp
+    hash3 ^= 2166136261UL;
+
     int c;
 
-    while ((c = tolower(*word++)))
-        hash = ((hash << 5) + hash) + c;
+    while ((c = *word++)) {
+        hash3 ^= c;
+        hash3 *= 16777619;
+    }
 
-    return hash % N;
+    table[hash3 % N] = 1;
+    return;
+}
+
+inline static bool hash_check_all (const char* word) {
+    unsigned long hash1 = 5381;
+    unsigned long hash2 = 0;
+    unsigned long hash3 = 0x12345678;
+
+    // See: https://github.com/aappleby/smhasher/blob/master/src/Hashes.cpp
+    hash3 ^= 2166136261UL;
+
+    int c;
+
+    while ((c = *word++)) {
+        hash1 = ((hash1 << 5) + hash1) + c;
+        hash2 = c + (hash2 << 6) + (hash2 << 16) - hash2;
+        hash3 ^= c;
+        hash3 *= 16777619;
+    }
+    return table[hash1 % base1] & table[base1 + (hash2 % base1)] & table[base2 + (hash3 % base1)];
 }
 
 // Returns true if word is in dictionary, else false
 bool check(const char *word)
 {
-    __uint32_t hash =  my_hash(word);
-
     char lower[LENGTH];
     strcpy(lower, word);
     for (char *c = lower; *c; c++)
         *c = tolower(*c);
-
-    node* pos = &table[hash];
-    for (__uint8_t i = 0; i < pos->stored; i++) {
-        if (!strcmp(pos->words[i], lower)) {
-            return true;
-        }
-    }
-    return false;
+    return hash_check_all(lower);
 }
 
 // // Hashes word to a number - looking at speller.c this is never called directly
@@ -68,24 +81,14 @@ unsigned int hash(const char *word)
 // Loads dictionary into memory, returning true if successful, else false
 bool load(const char *dictionary)
 {
-    clock_t start, end;
-    start = clock();
     FILE* f = fopen(dictionary, "r");
     char buffer[LENGTH + 2];
     while (fgets(buffer, LENGTH + 2, f)) {
-        // __uint8_t i = 0;
-        // for (; buffer[i] != '\n'; i++) {}
-        // buffer[i] = 0;
         buffer[strlen(buffer) - 1] = 0;
-        // strtok(buffer, "\n");
-        __uint32_t pos = my_hash(buffer); 
-        strcpy(table[pos].words[table[pos].stored++], buffer);
+        hash_set_all(buffer);
         dictsize++;
     }
     fclose(f);
-    end = clock();
-    double cpu_time_used = ((double) (end - start)) / CLOCKS_PER_SEC;
-    // printf("%d\n", cpu_time_used);
     return true;
 }
 
