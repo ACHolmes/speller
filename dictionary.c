@@ -13,45 +13,67 @@
 #include <fcntl.h>
 
 #define NODE_CAPACITY 5
-#define BASE_HASH 0x12345678 ^ 2166136261UL
+#define BASE_HASH3 0x12345678 ^ 2166136261UL
+#define TABLE_SIZE 400000
+#define BLOOM_FILTER_SIZE (4 * TABLE_SIZE)
 
-// Represents a node in a hash table
-typedef struct node
-{
-    __uint8_t stored;
-    char words[NODE_CAPACITY][LENGTH + 1];
-} node;
+const unsigned int N = BLOOM_FILTER_SIZE;
 
-// Picking roughly double the number of words, could probably do some tuning here
-const unsigned int N = 400000;
-
-// Hash table struct stores the size and the actual table.
-// Needs to store the size so that it can print the size at the end
-// Even when loading from a persisted hash table.
-typedef struct hash_table {
+// Bloom filter! Can't store pointers as those won't persist well, should extract table0, table1, table2 from store
+// to avoid repetitive addition cost to replicate pointers
+typedef struct bloom_filter {
+    __uint8_t store[N];
     __uint32_t size;
-    node table[N];
-} hash_table;
-
-// Dictionary size variable. Should probably erase this and just use the hash table but could
-// test whether it's faster to transfer it at the end
-__uint32_t dictsize = 0;
+} bloom_filter;
 
 // Hash table, yet to be initialized
-hash_table* ht;
+bloom_filter* bf;
 
+// Storing bool whether persisted to avoid msync always
 bool persisted = false;
 
-// See: https://github.com/aappleby/smhasher/blob/master/src/Hashes.cpp
-inline static __uint32_t my_hash (const char* word) {
-    unsigned long hash = BASE_HASH;
+inline static void hash_set_all (const char* word) {
+    unsigned long hash1 = 5381;
+    unsigned long hash2 = 0;
+    unsigned long hash3 = BASE_HASH3;
+    unsigned long hash4 = 7;
+
     int c;
 
     while ((c = *word++)) {
-        hash ^= c;
-        hash *= 16777619;
+        hash1 = ((hash1 << 5) + hash1) + c;
+        hash2 = c + (hash2 << 6) + (hash2 << 16) - hash2;
+        hash3 ^= c;
+        hash3 *= 16777633;
+        hash4 = hash4 * 37 + c;
     }
-    return hash % N;
+
+    bf->store[hash1 % TABLE_SIZE] = 1;
+    bf->store[TABLE_SIZE + hash2 % TABLE_SIZE] = 1;
+    bf->store[TABLE_SIZE * 2 + hash3 % TABLE_SIZE] = 1;
+    bf->store[TABLE_SIZE * 3 + hash4 % TABLE_SIZE] = 1; 
+
+    return;
+}
+
+inline static bool hash_check_all (const char* word) {
+    unsigned long hash1 = 5381;
+    unsigned long hash2 = 0;
+    unsigned long hash3 = BASE_HASH3;
+    unsigned long hash4 = 7;
+
+
+    int c;
+
+    while ((c = *word++)) {
+        hash1 = ((hash1 << 5) + hash1) + c;
+        hash2 = c + (hash2 << 6) + (hash2 << 16) - hash2;
+        hash3 ^= c;
+        hash3 *= 16777633;
+        hash4 = hash4 * 37 + c;
+    }
+    return bf->store[hash1 % TABLE_SIZE] & bf->store[TABLE_SIZE + hash2 % TABLE_SIZE] & bf->store[2 * TABLE_SIZE + hash3 % TABLE_SIZE]
+        &  bf->store[3 * TABLE_SIZE + hash4 % TABLE_SIZE];
 }
 
 // Returns true if word is in dictionary, else false
@@ -62,16 +84,7 @@ bool check(const char *word)
     for (char *c = lower; *c; c++)
         *c = tolower(*c);
 
-    __uint32_t hash = my_hash(lower);
-
-
-    node* pos = &ht->table[hash];
-    for (__uint8_t i = 0; i < pos->stored; i++) {
-        if (!strcmp(pos->words[i], lower)) {
-            return true;
-        }
-    }
-    return false;
+    return hash_check_all(lower);
 }
 
 // Hashes word to a number - looking at speller.c this is never called directly
@@ -87,23 +100,24 @@ bool load(const char *dictionary)
 {
     // Setup path to the persisted hash table
     char path[LENGTH + 10];
-    sprintf(path, "%s.data",  dictionary);
+    sprintf(path, "%s.datas",  dictionary);
 
     // If we have a persisted hash table, mmap it open and done
     if (access(path, F_OK) != -1) {
         int fd = open(path, O_RDWR | O_CREAT, (mode_t)0600);
 
-        ht = (hash_table*) mmap(0,(sizeof(hash_table)), PROT_READ, MAP_PRIVATE, fd, 0);
+        bf = (bloom_filter*) mmap(0,(sizeof(bloom_filter)), PROT_READ, MAP_SHARED, fd, 0);
         close (fd);
         persisted = true;
+        printf("size: %i\n", bf->size);
         return true;
     }
 
     // Else, create the file, mmap it into existence
     int fd = open(path, O_RDWR | O_CREAT, (mode_t)0600);
-    lseek(fd, (sizeof(hash_table)-1), SEEK_SET);
+    lseek(fd, (sizeof(bloom_filter)-1), SEEK_SET);
     write(fd, "", 1);
-    ht = (hash_table*) mmap(0,(sizeof(hash_table)), PROT_READ|PROT_WRITE, MAP_PRIVATE, fd, 0);
+    bf = (bloom_filter*) mmap(0,(sizeof(bloom_filter)), PROT_READ|PROT_WRITE, MAP_SHARED, fd, 0);
     close(fd);
 
     // Open dictionary
@@ -113,30 +127,28 @@ bool load(const char *dictionary)
     // Use fgets (significantly faster than fscanf) and remove newline character, hash and store
     while (fgets(buffer, LENGTH + 2, f)) {
         buffer[strlen(buffer) - 1] = 0;
-        __uint32_t pos = my_hash(buffer); 
-        strcpy(ht->table[pos].words[ht->table[pos].stored++], buffer);
-        dictsize++;
+        hash_set_all(buffer); 
+        bf->size++;
     }
 
     // Close for cleanup and store dictsize in persisted hash table
     fclose(f);
-    ht->size = dictsize;
     return true;
 }
 
 // Returns number of words in dictionary if loaded, else 0 if not yet loaded
 unsigned int size(void)
 {
-    return ht->size;
+    return bf->size;
 }
 
 // Unloads dictionary from memory, returning true if successful, else false
 bool unload(void)
 {
-
-    msync(ht, sizeof(hash_table), MS_SYNC);
     if (!persisted) {
-        munmap(ht, sizeof(hash_table));
+        msync(bf, sizeof(bloom_filter), MS_SYNC);
     }
+    munmap(bf, sizeof(bloom_filter));
+
     return true;
 }
