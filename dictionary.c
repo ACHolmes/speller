@@ -15,7 +15,7 @@
 #define NODE_CAPACITY 5
 #define BASE_HASH3 0x12345678 ^ 2166136261UL
 #define TABLE_SIZE 400000
-#define BLOOM_FILTER_SIZE (4 * TABLE_SIZE)
+#define BLOOM_FILTER_SIZE (5 * TABLE_SIZE)
 
 const unsigned int N = BLOOM_FILTER_SIZE;
 
@@ -34,46 +34,51 @@ bool persisted = false;
 
 inline static void hash_set_all (const char* word) {
     unsigned long hash1 = 5381;
-    unsigned long hash2 = 0;
+    unsigned long hash2 = 3;
     unsigned long hash3 = BASE_HASH3;
-    unsigned long hash4 = 7;
+    unsigned long hash4 = 119;
+    unsigned long hash5 = 0;
 
     int c;
-
+    int i = 0;
     while ((c = *word++)) {
         hash1 = ((hash1 << 5) + hash1) + c;
         hash2 = c + (hash2 << 6) + (hash2 << 16) - hash2;
         hash3 ^= c;
-        hash3 *= 16777633;
-        hash4 = hash4 * 37 + c;
+        hash3 *= 16777693;
+        hash4 = hash4 * 493 + c;
+        hash5 += (c << (5 * i++)) + 513;
     }
 
     bf->store[hash1 % TABLE_SIZE] = 1;
     bf->store[TABLE_SIZE + hash2 % TABLE_SIZE] = 1;
     bf->store[TABLE_SIZE * 2 + hash3 % TABLE_SIZE] = 1;
     bf->store[TABLE_SIZE * 3 + hash4 % TABLE_SIZE] = 1; 
-
+    bf->store[TABLE_SIZE * 4 + hash5 % TABLE_SIZE] = 1; 
     return;
 }
 
 inline static bool hash_check_all (const char* word) {
     unsigned long hash1 = 5381;
-    unsigned long hash2 = 0;
+    unsigned long hash2 = 3;
     unsigned long hash3 = BASE_HASH3;
-    unsigned long hash4 = 7;
-
+    unsigned long hash4 = 119;
+    unsigned long hash5 = 0;
 
     int c;
+    int i = 0;
 
     while ((c = *word++)) {
         hash1 = ((hash1 << 5) + hash1) + c;
         hash2 = c + (hash2 << 6) + (hash2 << 16) - hash2;
         hash3 ^= c;
-        hash3 *= 16777633;
-        hash4 = hash4 * 37 + c;
+        hash3 *= 16777693;
+        hash4 = hash4 * 493 + c;
+        hash5 += (c << (5 * i++)) + 513;
+
     }
     return bf->store[hash1 % TABLE_SIZE] & bf->store[TABLE_SIZE + hash2 % TABLE_SIZE] & bf->store[2 * TABLE_SIZE + hash3 % TABLE_SIZE]
-        &  bf->store[3 * TABLE_SIZE + hash4 % TABLE_SIZE];
+        &  bf->store[3 * TABLE_SIZE + hash4 % TABLE_SIZE] & bf->store[4 * TABLE_SIZE + hash5 % TABLE_SIZE];
 }
 
 // Returns true if word is in dictionary, else false
